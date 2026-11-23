@@ -78,6 +78,9 @@ Any Game\                  this kit (share it with `gamekit pack`)
 Share the GitHub link above. Offline: `gamekit pack` makes `AnyGame_kit_<version>.zip` next to this folder without
 your config, logs or Python environment (SKILL.md is inside); the other person unzips it and runs `gamekit setup`.
 
+## License
+MIT (see `LICENSE`). The bundled scrcpy server keeps its own Apache 2.0 license (below).
+
 ## Credits
 `kit/scrcpy/scrcpy-server-v5.0.1` is the unmodified server of [scrcpy](https://github.com/Genymobile/scrcpy)
 (Apache License 2.0, see `kit/scrcpy/LICENSE-scrcpy.txt` and `NOTICE.txt`), used for the fast live screen stream.
