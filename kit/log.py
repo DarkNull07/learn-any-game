@@ -41,6 +41,15 @@ class Logger:
                 w.writeheader()
             w.writerow(row)
 
+    def picture(self, img, tag):
+        """Only when config save_screens = "all": a picture of a normal moment (logs\\screens\\)."""
+        folder = os.path.join(self.folder, "screens")
+        os.makedirs(folder, exist_ok=True)
+        p = os.path.join(folder, f"{dt.datetime.now():%Y%m%d_%H%M%S}_{tag}.png")
+        if img is not None:
+            cv2.imwrite(p, img)
+        return p
+
     def failure(self, img, tag):
         """Saves the screen plus the last 20 log lines, for the next fix (no need to ask the user what happened)."""
         name = f"{dt.datetime.now():%Y%m%d_%H%M%S}_{tag}"

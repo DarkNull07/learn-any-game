@@ -1,0 +1,4 @@
+scrcpy-server-v5.0.1 is the unmodified server from scrcpy (https://github.com/Genymobile/scrcpy),
+Copyright (C) 2018 Genymobile, Copyright (C) 2018-2025 Romain Vimont,
+licensed under the Apache License, Version 2.0 (see LICENSE-scrcpy.txt in this folder).
+It is pushed to the phone's /data/local/tmp only while the kit is connected and removed when it disconnects.

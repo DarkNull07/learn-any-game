@@ -83,7 +83,18 @@ class Session:
 
     def gestures(self):
         nat = self.meta["screen_natural"]
-        return touch.load(os.path.join(self.dir, "touches.log"), self.meta["touch_max"], nat, self.meta["rotation"])
+        rots = [(t, r) for t, _, _, r in self.activities() if r is not None]
+        start = self.meta.get("rotation", 0)
+
+        def rotation_at(t):
+            r = start
+            for tr, rr in rots:
+                if tr <= t:
+                    r = rr
+                else:
+                    break
+            return r
+        return touch.load(os.path.join(self.dir, "touches.log"), self.meta["touch_max"], nat, rotation_at)
 
     def activities(self):
         rows = []
@@ -94,7 +105,8 @@ class Session:
                 for line in f:
                     parts = line.rstrip("\n").split("\t")
                     if len(parts) >= 3:
-                        rows.append((float(parts[0]), parts[1], parts[2]))
+                        rot = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else None
+                        rows.append((float(parts[0]), parts[1], parts[2], rot))
         return rows
 
     # ------------------------------------------------------------ frames
@@ -198,10 +210,15 @@ def run(session_dir, log=print):
             keep.setdefault(i, f"touch{gi:03d}_{lab}")
         busy.append((b, a))
         items.append((g["t_down"], "touch", g))
-    for t, pkg, act in acts:
+    prev_app, prev_rot = None, s.meta.get("rotation", 0)
+    for t, pkg, act, rot in acts:
         i = s.idx_at(t + 0.7)
         keep.setdefault(i, "app_change")
-        items.append((t, "app", (pkg, act, any(p.search(f"{pkg} {act}") for p in ad_words), i)))
+        if (pkg, act) != prev_app:
+            items.append((t, "app", (pkg, act, any(p.search(f"{pkg} {act}") for p in ad_words), i)))
+        if rot is not None and rot != prev_rot:
+            items.append((t, "rotation", rot))
+        prev_app, prev_rot = (pkg, act), (rot if rot is not None else prev_rot)
 
     # pass 2: scenes with no touch (settled screens that differ from the last kept frame, long animations),
     # and saving every kept frame
@@ -313,6 +330,9 @@ def run(session_dir, log=print):
                 game_pkg = (s.meta.get("first_app") or [None])[0]
                 tag = "   [AD]" if is_ad else ("   [OTHER APP: left the game]" if game_pkg and pkg != game_pkg else "")
                 f.write(f"{ts} APP IN FRONT: {front}{tag}\n")
+            elif kind == "rotation":
+                f.write(f"{ts} SCREEN ROTATED: rotation {data} ({'landscape' if data in (1, 3) else 'portrait'}); "
+                        f"coordinates below are in the rotated screen\n")
             else:
                 f.write(f"{ts}      {kind}: screen changed with no touch | scenes/{data:06d}_{kind}.jpg\n")
     with open(os.path.join(s.out, "dropped.txt"), "w", encoding="utf-8") as f:

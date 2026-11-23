@@ -115,7 +115,7 @@ def gestures(cs, offset=0.0):
     res = []
     for g in out:
         f0 = g["fingers"][0]
-        (t0, x0, y0), (t1, x1, y1) = f0["pts"][0], f0["pts"][-1]
+        (_, x0, y0), (_, x1, y1) = f0["pts"][0], f0["pts"][-1]
         path = sum(((b[1] - a[1]) ** 2 + (b[2] - a[2]) ** 2) ** 0.5 for a, b in zip(f0["pts"], f0["pts"][1:]))
         span = max(max(abs(p[1] - x0), abs(p[2] - y0)) for p in f0["pts"])
         dur = g["up"] - g["down"]
@@ -133,7 +133,34 @@ def gestures(cs, offset=0.0):
     return res
 
 
-def load(path, raw_max, screen, rotation=0):
+def rotate_point(x, y, rotation, screen):
+    """Natural (portrait) pixels -> what the user saw at this rotation (0-3)."""
+    W, H = screen
+    if rotation == 1:
+        return y, W - x
+    if rotation == 2:
+        return W - x, H - y
+    if rotation == 3:
+        return H - y, x
+    return x, y
+
+
+def rotate_gesture(g, rotation, screen):
+    if not rotation:
+        return g
+    rp = lambda x, y: tuple(round(v) for v in rotate_point(x, y, rotation, screen))  # noqa: E731
+    g["start"], g["end"] = rp(*g["start"]), rp(*g["end"])
+    g["points"] = [[(t, *rp(x, y)) for t, x, y in f] for f in g["points"]]
+    g["rotation"] = rotation
+    return g
+
+
+def load(path, raw_max, screen, rotation_at=None):
+    """Gestures in the pixels the user saw. rotation_at(pc_time) -> 0-3 gives the screen rotation at each touch
+    (from the recorder's activity.log); without it the screen is taken as never rotated."""
     with open(path, encoding="utf-8", errors="ignore") as f:
         events, offset = parse_lines(f.read().splitlines())
-    return gestures(contacts(events, raw_max, screen, rotation), offset)
+    gs = gestures(contacts(events, raw_max, screen, 0), offset)
+    if rotation_at:
+        gs = [rotate_gesture(g, rotation_at(g["t_down"]), screen) for g in gs]
+    return gs

@@ -5,6 +5,7 @@ warm resume and cold restart of a game, touch-screen info for the recorder.
 Every tap goes through `guard` (set by the bot): it can refuse a tap, e.g. on a money button. Coordinates are always
 real phone pixels in the current orientation."""
 import re
+import shlex
 import subprocess
 import time
 
@@ -18,18 +19,30 @@ class PhoneError(RuntimeError):
     pass
 
 
+PACKAGE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$")
+
+
+def check_package(pkg):
+    """Android package names only (they go into shell commands)."""
+    if not pkg or not PACKAGE.match(pkg):
+        raise PhoneError(f"not a valid Android package name: {pkg!r}")
+    return pkg
+
+
 class Device:
-    def __init__(self, cfg=None, serial=None, log=print, use_stream=True):
+    def __init__(self, cfg=None, serial=None, log=print, use_stream=True, dry_run=False):
         self.cfg = cfg or config.load()
         self.adb_path = config.find_adb(self.cfg)
         if not self.adb_path:
             raise PhoneError("adb was not found. Install Android platform-tools, or run: gamekit setup")
-        self.serial = serial
+        self.serial = serial or self.cfg.get("serial") or None
         self.log = log
         self._shell = None
         self.stream = None
-        self.guard = None          # function(x, y) -> reason string to refuse a tap, or None
+        self.guard = None          # function(x, y, img) -> reason string to refuse a tap, or None
+        self.dry_run = dry_run     # True: nothing at all is sent to the phone's input
         self.last_img = None
+        self.last_img_t = 0.0
         self.w, self.h = self.size()
         if use_stream:
             self.start_stream()
@@ -70,7 +83,7 @@ class Device:
             if self._shell is None or self._shell.poll() is not None:
                 self._shell = subprocess.Popen(self._cmd("shell"), stdin=subprocess.PIPE,
                                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self._shell.stdin.write((line + " &\n").encode())
+            self._shell.stdin.write((line + "\n").encode())   # in order, one after the other
             self._shell.stdin.flush()
         except OSError:
             self._shell = None
@@ -102,20 +115,24 @@ class Device:
         return int(m.group(1)) if m else None
 
     def touch_device(self):
-        """(device path, max x, max y) of the touch screen, from getevent -pl."""
+        """(device path, max x, max y) of the touch screen, from getevent -pl. Prefers the device Android marks as a
+        direct-touch screen (INPUT_PROP_DIRECT); touch pads/pens without it are only used if nothing else fits."""
         out = self.shell("getevent -pl", timeout=20)
-        best = None
+        direct, other = None, None
         for block in re.split(r"\nadd device \d+: ", "\n" + out):
             lines = block.strip().splitlines()
-            if not lines:
+            if not lines or not lines[0].strip().startswith("/dev/input"):
                 continue
-            path = lines[0].strip()
             mx = re.search(r"ABS_MT_POSITION_X\s*:.*?max (\d+)", block)
             my = re.search(r"ABS_MT_POSITION_Y\s*:.*?max (\d+)", block)
-            if mx and my and path.startswith("/dev/input"):
-                cand = (path, int(mx.group(1)), int(my.group(1)))
-                if best is None or "touch" in block.lower():
-                    best = cand
+            if not (mx and my):
+                continue
+            cand = (lines[0].strip(), int(mx.group(1)), int(my.group(1)))
+            if "INPUT_PROP_DIRECT" in block and direct is None:
+                direct = cand
+            elif other is None:
+                other = cand
+        best = direct or other
         if not best:
             raise PhoneError("no touch screen found in getevent -pl")
         return best
@@ -125,7 +142,8 @@ class Device:
 
     # ------------------------------------------------------------ apps
     def foreground(self):
-        """(package, activity) in front, e.g. ('com.foo', 'com.google.android.gms.ads.AdActivity'). (None, None) if unknown."""
+        """(package, activity) in front, e.g. ('com.foo', 'com.google.android.gms.ads.AdActivity').
+        (None, None) if Android didn't answer: callers must treat that as "unknown", never as "another app"."""
         out = self.adb_once("shell", "dumpsys activity activities")
         for key in ("topResumedActivity", "mResumedActivity", "ResumedActivity"):
             m = re.search(key + r"[=:].*?\s([\w.]+)/([\w.$]+)", out)
@@ -141,11 +159,15 @@ class Device:
 
     def resume(self, pkg):
         """Brings the game back to the front without restarting it (seconds, keeps the level)."""
-        self.shell(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
+        if self.dry_run:
+            return
+        self.shell(f"monkey -p {shlex.quote(check_package(pkg))} -c android.intent.category.LAUNCHER 1")
 
     def restart(self, pkg):
         """Cold restart: slow for some games, so callers use it only when nothing else worked."""
-        self.shell(f"am force-stop {pkg}")
+        if self.dry_run:
+            return
+        self.shell(f"am force-stop {shlex.quote(check_package(pkg))}")
         time.sleep(0.5)
         self.resume(pkg)
 
@@ -161,7 +183,7 @@ class Device:
     def start_stream(self):
         try:
             from .stream import Phone
-            self.stream = Phone(adb_path=self.adb_path).start()
+            self.stream = Phone(adb_path=self.adb_path, serial=self.serial).start()
             self.log("  Live screen stream on (scrcpy server, nothing installed on the phone).")
         except Exception as e:  # noqa: BLE001
             self.stream = None
@@ -171,19 +193,30 @@ class Device:
         return self.stream is not None and self.stream.alive
 
     def screenshot(self):
+        """The screen as the bot sees it (BGR, real phone pixels). Size follows the phone: after a rotation w/h change."""
+        img = None
         if self.live():
             img = self.stream.next_frame()
-            if img is not None:
-                if img.shape[1] != self.w or img.shape[0] != self.h:
-                    img = cv2.resize(img, (self.w, self.h))
-                self.last_img = img
-                return img
-        png = self.adb("exec-out", "screencap", "-p", binary=True)
-        img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
-            raise PhoneError("could not decode a screenshot")
-        self.last_img = img
+            png = self.adb("exec-out", "screencap", "-p", binary=True)
+            img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                raise PhoneError("could not decode a screenshot")
+        self.h, self.w = img.shape[:2]
+        self.last_img, self.last_img_t = img, time.time()
         return img
+
+    def fresh(self, max_age=0.25):
+        """A picture no older than max_age seconds (the newest stream frame costs nothing)."""
+        if self.live():
+            img = self.stream.latest()
+            if img is not None:
+                self.h, self.w = img.shape[:2]
+                self.last_img, self.last_img_t = img, time.time()
+                return img
+        if self.last_img is None or time.time() - self.last_img_t > max_age:
+            return self.screenshot()
+        return self.last_img
 
     def wait_still(self, max_wait=3.0, still_for=0.3, thresh=0.6):
         """Screenshots until the screen stops changing for still_for seconds (animations done)."""
@@ -199,17 +232,23 @@ class Device:
         return prev
 
     # ------------------------------------------------------------ input
-    def _check(self, x, y):
+    def _check(self, *points):
+        """Every input passes here: dry run sends nothing; the guard sees a fresh picture and may refuse."""
+        if self.dry_run:
+            self.log(f"  (dry run: no input at {points})")
+            return False
         if self.guard:
-            why = self.guard(x, y)
-            if why:
-                self.log(f"  REFUSED tap at ({x},{y}): {why}")
-                return False
+            img = self.fresh()
+            for x, y in points:
+                why = self.guard(int(x), int(y), img)
+                if why:
+                    self.log(f"  REFUSED input at ({int(x)},{int(y)}): {why}")
+                    return False
         return True
 
     def tap(self, x, y):
         x, y = int(x), int(y)
-        if not self._check(x, y):
+        if not self._check((x, y)):
             return False
         if self.live():
             try:
@@ -221,7 +260,7 @@ class Device:
         return True
 
     def swipe(self, x1, y1, x2, y2, ms=250):
-        if not self._check(x1, y1):
+        if not self._check((x1, y1), (x2, y2)):
             return False
         if self.live():
             try:
@@ -234,12 +273,12 @@ class Device:
         return True
 
     def path(self, points, ms_per_step=16):
-        """One finger through several points (word games, drawing lines). Needs the live stream."""
-        if not points or not self._check(*points[0]):
+        """One finger through several points (word games, drawing lines)."""
+        if not points or not self._check(*points):
             return False
         if not self.live():
             for a, b in zip(points, points[1:]):
-                self.shell(f"input swipe {a[0]} {a[1]} {b[0]} {b[1]} 120")
+                self.shell(f"input swipe {int(a[0])} {int(a[1])} {int(b[0])} {int(b[1])} 120")
             return True
         from .stream import DOWN, MOVE, UP
         s = self.stream
@@ -253,6 +292,8 @@ class Device:
         return True
 
     def pinch(self, a0, b0, a1, b1):
+        if not self._check(a0, b0, a1, b1):
+            return False
         if self.live():
             self.stream.pinch(a0, b0, a1, b1)
             return True
@@ -260,13 +301,23 @@ class Device:
         return False
 
     def back(self):
+        if self.dry_run:
+            self.log("  (dry run: no Back key)")
+            return False
         if self.live():
             try:
                 self.stream.back()
-                return
+                return True
             except OSError:
                 self.stream.alive = False
         self.shell("input keyevent 4")
+        return True
+
+    def home(self):
+        if self.dry_run:
+            return False
+        self.shell("input keyevent 3")
+        return True
 
     def close(self):
         if self.stream:

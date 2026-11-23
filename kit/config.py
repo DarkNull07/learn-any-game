@@ -8,10 +8,15 @@ KIT_DIR = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.dirname(KIT_DIR)   # the "Any Game" folder, or a game folder holding its own copy of kit\
 
 
+WARNING = ""   # set when a game folder lost its link to the kit (the bot prints it)
+
+
 def _kit_root():
     """The master kit folder ("Any Game"). A game folder's game.json remembers where it is."""
+    global WARNING
     if os.path.exists(os.path.join(HOME, "gamekit.py")):
         return HOME
+    root = ""
     try:
         with open(os.path.join(HOME, "game.json"), encoding="utf-8") as f:
             root = json.load(f).get("kit_root", "")
@@ -19,6 +24,9 @@ def _kit_root():
             return root
     except (OSError, ValueError):
         pass
+    if os.path.exists(os.path.join(HOME, "game.json")):
+        WARNING = (f"the kit folder recorded in game.json ({root or 'none'}) is gone, so the shared ad library and "
+                   f"your settings can't be found. Run  gamekit sync \"<this game>\"  from the kit's new place.")
     return HOME
 
 
@@ -37,7 +45,8 @@ DEFAULTS = {
     "hints_allowed": False,
     "safe_mode": False,
     "save_screens": "failures",     # failures | all
-    "wait_for_go": True,            # agents: short plan, then wait for "go" before long builds
+    "wait_for_go": True,            # read by the agent (SKILL.md), not by the scripts: plan first, wait for "go"
+    "serial": None,                 # which phone, when more than one is connected (set by setup)
     "phone": {},                    # filled by setup: model, android, width, height, density, touch
 }
 

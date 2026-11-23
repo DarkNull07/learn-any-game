@@ -4,7 +4,6 @@ Run `gamekit help` for the steps."""
 import argparse
 import datetime as dt
 import fnmatch
-import json
 import os
 import re
 import shutil
@@ -52,6 +51,8 @@ OTHER COMMANDS
   gamekit frame "Game" SEC     pull the picture at SEC seconds of the latest session (nothing is ever lost)
   gamekit pack                 zip this kit to share it (your config, logs and Python env are left out)
 
+On macOS/Linux use ./gamekit.sh instead of gamekit, and run.sh / probe.sh in game folders.
+
 RULES THE BOTS FOLLOW: never buy anything, never watch reward ads, close ads fast (and learn new close buttons),
 detailed console output plus a log and report, pictures saved only when something goes wrong.
 """
@@ -87,17 +88,20 @@ def cmd_setup(a):
             __import__(mod)
         except ImportError:
             missing.append(pipname)
-    venv_py = os.path.join(ROOT, ".venv", "Scripts" if os.name == "nt" else "bin",
-                           "python.exe" if os.name == "nt" else "python")
+    venv_py = _venv_python()
     if missing:
         say(f"Missing Python packages: {', '.join(missing)}")
-        if ask_bool(f"Create a private Python environment in {ROOT}\\.venv and install them", True, a.yes):
+        if os.path.abspath(sys.executable) == os.path.abspath(venv_py):
+            subprocess.run([venv_py, "-m", "pip", "install", "-r", os.path.join(ROOT, "requirements.txt")], check=True)
+        elif ask_bool(f"Create a private Python environment in {os.path.join(ROOT, '.venv')} and install them",
+                      True, a.yes):
             if not os.path.exists(venv_py):
                 subprocess.run([sys.executable, "-m", "venv", os.path.join(ROOT, ".venv")], check=True)
             subprocess.run([venv_py, "-m", "pip", "install", "-r", os.path.join(ROOT, "requirements.txt")], check=True)
-            say("Installed. From now on gamekit.bat uses that environment. Run gamekit setup again to finish.")
-            return 0
-        return 1
+        else:
+            return 1
+        say("Installed. Continuing setup inside that environment (gamekit uses it from now on).\n")
+        return subprocess.call([venv_py, os.path.abspath(__file__), "setup"] + (["--yes"] if a.yes else []))
     adb = config.find_adb(cfg)
     if not adb:
         say("adb (Android platform-tools) was not found.")
@@ -113,12 +117,19 @@ def cmd_setup(a):
     if not devs:
         say("No phone found. Connect it by USB, turn on USB debugging, accept the prompt on the phone, run setup again.")
         return 1
-    if devs[0][1].strip() != "device":
+    ready = [d[0] for d in devs if d[1].strip() == "device"]
+    if not ready:
         say(f"Phone found but it says '{devs[0][1].strip()}'. Accept 'Allow USB debugging' on the phone, run setup again.")
         return 1
+    cfg["serial"] = None
+    if len(ready) > 1:
+        say("More than one phone/emulator is connected: " + ", ".join(ready))
+        pick = ask("Serial of the phone to use", cfg.get("serial") if cfg.get("serial") in ready else ready[0], a.yes)
+        cfg["serial"] = pick if pick in ready else ready[0]
     from kit.device import Device
     dev = Device(cfg, use_stream=False, log=say)
     props = dev.props()
+    say("(Setup reads the phone only; it never taps anything.)")
     path, mx, my = dev.touch_device()
     cfg["phone"] = {**props, "width": dev.w, "height": dev.h, "density": dev.density(), "touch_device": path,
                     "touch_max": [mx, my]}
@@ -177,16 +188,33 @@ def cmd_doctor(a):
 
 # ------------------------------------------------------------------ games
 def _game(name, must_exist=True):
-    folder = config.game_dir(name)
+    folder = config.game_dir(_check_name(name))
     if must_exist and not os.path.exists(os.path.join(folder, "game.json")):
         say(f'No game "{name}" in {config.load()["base_folder"]}. Create it with: gamekit new "{name}"')
         sys.exit(1)
     return folder
 
 
+def _venv_python():
+    if os.name == "nt":
+        return os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+    return os.path.join(ROOT, ".venv", "bin", "python")
+
+
 def _python_for_games():
-    venv_py = os.path.join(ROOT, ".venv", "Scripts", "python.exe")
+    venv_py = _venv_python()
     return venv_py if os.path.exists(venv_py) else sys.executable
+
+
+NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.()'&+-]{0,59}$")
+
+
+def _check_name(name):
+    """A game name becomes a folder name: no paths, no tricks."""
+    if not NAME_OK.match(name) or ".." in name or name.strip() != name or name.endswith("."):
+        say(f'"{name}" can\'t be a game folder name. Use letters, numbers, spaces and - _ . ( ) only.')
+        sys.exit(1)
+    return name
 
 
 def _copy_kit(dest):
@@ -204,7 +232,11 @@ def cmd_new(a):
     if os.path.exists(os.path.join(folder, "game.json")):
         say(f"{folder} already exists. Nothing changed.")
         return 1
+    from kit.device import PACKAGE
     pkg = a.package
+    if pkg and not PACKAGE.match(pkg):
+        say(f"{pkg} is not an Android package name (like com.company.game).")
+        return 1
     if not pkg:
         try:
             from kit.device import Device
@@ -215,9 +247,10 @@ def cmd_new(a):
         except Exception as e:  # noqa: BLE001
             say(f"Could not ask the phone ({e}). Pass --package com.example.game")
             return 1
-    if not pkg or pkg.startswith(("com.android.launcher", "com.google.android.apps.nexuslauncher")) or "launcher" in pkg:
-        say("The phone shows the home screen. Open the game first, or pass --package com.example.game")
-        return 1
+        if not pkg or "launcher" in pkg.lower() or pkg in ("com.android.systemui", "com.android.settings"):
+            say("The phone shows the home screen or a system screen. Open the game first, or pass "
+                "--package com.example.game")
+            return 1
     os.makedirs(folder, exist_ok=True)
     tpl = os.path.join(ROOT, "template")
     for item in os.listdir(tpl):
@@ -230,13 +263,7 @@ def cmd_new(a):
     for sub in ("sessions", "logs", "regress", "backups", "waste", os.path.join("model", "shots"),
                 os.path.join("model", "templates")):
         os.makedirs(os.path.join(folder, sub), exist_ok=True)
-    py = _python_for_games()
-    for bat in ("run.bat", "probe.bat"):
-        p = os.path.join(folder, bat)
-        with open(p, encoding="utf-8") as f:
-            s = f.read().replace("@@PYTHON@@", py)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(s)
+    _write_launchers(folder)
     gm = os.path.join(folder, "model", "GAME_MODEL.md")
     with open(gm, encoding="utf-8") as f:
         s = f.read().replace("<Game Name>", a.name)
@@ -249,6 +276,22 @@ def cmd_new(a):
     say(_tree(folder))
     say(f'Next: fill model\\card.txt, then  gamekit record "{a.name}"  and play 10-15 levels.')
     return 0
+
+
+def _write_launchers(folder):
+    """run.bat/probe.bat (Windows) and run.sh/probe.sh (macOS/Linux) with this kit's Python baked in."""
+    py = _python_for_games()
+    for name in ("run.bat", "probe.bat", "run.sh", "probe.sh"):
+        src = os.path.join(ROOT, "template", name)
+        p = os.path.join(folder, name)
+        if not os.path.exists(src):
+            continue
+        with open(src, encoding="utf-8") as f:
+            s = f.read().replace("@@PYTHON@@", py)
+        with open(p, "w", encoding="utf-8", newline="\r\n" if name.endswith(".bat") else "\n") as f:
+            f.write(s.replace("\r\n", "\n"))
+        if name.endswith(".sh"):
+            os.chmod(p, 0o755)
 
 
 def _tree(folder):
@@ -324,7 +367,8 @@ def cmd_sync(a):
     if os.path.exists(gl):
         with open(gl, encoding="utf-8") as f:
             for line in f:
-                if "[general]" in line:
+                # only real lesson lines: "YYYY-MM-DD | ... [general]" (never headers or other text)
+                if re.match(r"^\d{4}-\d{2}-\d{2}\s*\|", line) and "[general]" in line:
                     text = line.replace("[general]", "").strip()
                     if text and text not in have:
                         with open(shared, "a", encoding="utf-8") as s:
@@ -337,19 +381,32 @@ def cmd_sync(a):
         backup = os.path.join(folder, "backups", f"kit_{old}_{dt.datetime.now():%Y%m%d_%H%M%S}")
         shutil.copytree(os.path.join(folder, "kit"), backup, ignore=shutil.ignore_patterns("__pycache__"))
         _copy_kit(os.path.join(folder, "kit"))
+        # the generic template files too (never solver.py or model\: those belong to the game)
+        for name in GENERIC_FILES:
+            src, dst = os.path.join(ROOT, "template", name), os.path.join(folder, name)
+            if os.path.exists(dst):
+                shutil.copy2(dst, os.path.join(backup, name))
+            if os.path.exists(src) and not name.endswith((".bat", ".sh")):
+                shutil.copy2(src, dst)
+        _write_launchers(folder)
         g["kit_version"] = __version__
-        g["kit_root"] = ROOT
-        config.save_game(folder, g)
-        say(f"Kit in the game folder updated {old} -> {__version__} (old copy in {backup}). Run regress_test.py now.")
+        say(f"Kit and bot skeleton updated {old} -> {__version__} (old copies in {backup}). Run regress_test.py now.")
     else:
         say(f"Kit in the game folder is current ({__version__}).")
+    if g.get("kit_root") != ROOT:
+        say(f"Kit folder link fixed: {g.get('kit_root')} -> {ROOT}")
+    g["kit_root"] = ROOT
+    config.save_game(folder, g)
     n = len([f for f in os.listdir(os.path.join(config.LIBRARY, "ads", "close_templates")) if f.endswith(".png")])
     say(f"Shared ad close buttons known: {n}")
     return 0
 
 
+GENERIC_FILES = ("bot.py", "probe.py", "regress_test.py", "run.bat", "probe.bat", "run.sh", "probe.sh")
+
+
 def cmd_pack(a):
-    skip = [".venv", "__pycache__", "config.json", "tools", "*.zip", "ads_log.csv", "blacklist"]
+    skip = [".git", ".github", ".venv", "__pycache__", "config.json", "tools", "*.zip", "ads_log.csv", "blacklist"]
     out = os.path.join(os.path.dirname(ROOT), f"AnyGame_kit_{__version__}.zip")
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for dirpath, dirs, files in os.walk(ROOT):

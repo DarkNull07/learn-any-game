@@ -47,18 +47,21 @@ class Recorder:
         self._save_meta(meta)
         self.log(f"  Phone {meta['phone'].get('model')} {dev.w}x{dev.h}, touch screen {path} (raw max {mx}x{my}).")
         self.log(f"  App in front: {pkg}")
-        old_touches = dev.adb_once("shell", "settings get system show_touches").strip() or "0"
-        dev.adb_once("shell", "settings put system show_touches 1")
+        old_touches = dev.adb_once("shell", "settings get system show_touches").strip()
+        if old_touches not in ("0", "1"):      # "null" (never set) or no answer: Android's default is off
+            old_touches = "0"
+        self._getevent = None
         threads = [threading.Thread(target=self._touches, args=(path,), daemon=True),
                    threading.Thread(target=self._activity, daemon=True)]
         threads.append(threading.Thread(target=self._video_stream if dev.live() else self._video_screenrecord,
                                         daemon=True))
-        for t in threads:
-            t.start()
-        threading.Thread(target=self._wait_enter, daemon=True).start()
-        self.log("  Play the game now. Press Enter here when you are done.")
-        t0 = time.time()
         try:
+            dev.adb_once("shell", "settings put system show_touches 1")
+            for t in threads:
+                t.start()
+            threading.Thread(target=self._wait_enter, daemon=True).start()
+            self.log("  Play the game now. Press Enter here when you are done.")
+            t0 = time.time()
             while not self.stop.is_set():
                 self.stop.wait(10)
                 el = time.time() - t0
@@ -67,16 +70,21 @@ class Recorder:
                 if self.minutes and el > self.minutes * 60:
                     self.stop.set()
         except KeyboardInterrupt:
+            pass
+        finally:   # whatever happens: stop everything and put show_touches back
             self.stop.set()
-        self.log("  Stopping...")
-        for t in threads:
-            t.join(timeout=200)
-        dev.adb_once("shell", f"settings put system show_touches {old_touches}")
-        meta["ended"] = time.time()
-        meta["frames"] = self.n_frames
-        meta["touch_downs"] = self.n_touch
-        self._save_meta(meta)
-        dev.close()
+            self.log("  Stopping...")
+            if self._getevent and self._getevent.poll() is None:
+                self._getevent.kill()          # unblocks the touch reader at once
+            for t in threads:
+                if t.is_alive():
+                    t.join(timeout=30 if t is threads[0] else 200)
+            dev.adb_once("shell", f"settings put system show_touches {old_touches}")
+            meta["ended"] = time.time()
+            meta["frames"] = self.n_frames
+            meta["touch_downs"] = self.n_touch
+            self._save_meta(meta)
+            dev.close()
         self.log(f"Saved {self.n_frames} frames and {self.n_touch} touches in {self.dir}")
         self.log(f'Next: gamekit distill "{os.path.basename(self.game_folder)}"')
         return self.dir
@@ -94,8 +102,8 @@ class Recorder:
 
     # ------------------------------------------------------------ parts
     def _touches(self, path):
-        p = subprocess.Popen(self.dev._cmd("shell", f"getevent -lt {path}"), stdout=subprocess.PIPE,
-                             stderr=subprocess.DEVNULL, bufsize=0)
+        p = self._getevent = subprocess.Popen(self.dev._cmd("shell", f"getevent -lt {path}"), stdout=subprocess.PIPE,
+                                              stderr=subprocess.DEVNULL, bufsize=0)
         with open(os.path.join(self.dir, "touches.log"), "w", encoding="utf-8") as f:
             buf = b""
             while not self.stop.is_set():
@@ -120,21 +128,24 @@ class Recorder:
             last, rot, t_rot = None, None, 0.0
             while not self.stop.is_set():
                 fg = self.dev.foreground()
-                if time.time() - t_rot > 5:
+                if time.time() - t_rot > 2:
                     rot, t_rot = self.dev.rotation(), time.time()
-                if fg != last:
+                if fg[0] is None:          # Android didn't answer this time: not a change
+                    self.stop.wait(1.0)
+                    continue
+                if (fg, rot) != last:
                     now = time.time()
                     f.write(f"{now:.3f}\t{fg[0]}\t{fg[1]}\t{rot}\n")
                     f.flush()
                     self.fg = fg
-                    if last is not None and fg[0] and now - last_ui > 2:
+                    if last is not None and fg != last[0] and now - last_ui > 2:
                         self.log(f"  Screen changed: {fg[1] or fg[0]}")
                         xml = self.dev.ui_dump()
                         if xml:
                             with open(os.path.join(self.dir, "ui", f"{now:.1f}.xml"), "w", encoding="utf-8") as u:
                                 u.write(xml)
                         last_ui = now
-                    last = fg
+                    last = (fg, rot)
                 self.stop.wait(1.0)
 
     def _video_stream(self):

@@ -35,6 +35,9 @@ def main():
                 total += 1
                 bad += got != exp
                 print(f"{'ok  ' if got == exp else 'FAIL'} {name}: solver read {got}, expected {exp}")
+    if total == 0:
+        print("FAIL: no regress frames yet. Save one per screen with  probe.bat regress NAME EXPECTED")
+        return 1
     print(f"{total - bad}/{total} passed")
     return 1 if bad else 0
 

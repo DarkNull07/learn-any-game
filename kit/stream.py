@@ -22,8 +22,9 @@ DOWN, UP, MOVE = 0, 1, 2
 
 
 class Phone:
-    def __init__(self, adb_path="adb", port=27199, bit_rate=24_000_000, max_fps=60):
+    def __init__(self, adb_path="adb", port=27199, bit_rate=24_000_000, max_fps=60, serial=None):
         self.adb = adb_path
+        self.adbc = [adb_path] + (["-s", serial] if serial else [])
         self.port = port
         self.bit_rate, self.max_fps = bit_rate, max_fps
         self.w, self.h = 0, 0
@@ -44,13 +45,13 @@ class Phone:
         jar = jars[-1]
         version = re.search(r"-v([\d.]+)$", jar).group(1)
         scid = "%08x" % random.randrange(1 << 31)
-        subprocess.run([self.adb, "push", jar, REMOTE], capture_output=True, timeout=30, check=True)
-        subprocess.run([self.adb, "forward", f"tcp:{self.port}", f"localabstract:scrcpy_{scid}"],
+        subprocess.run([*self.adbc, "push", jar, REMOTE], capture_output=True, timeout=30, check=True)
+        subprocess.run([*self.adbc, "forward", f"tcp:{self.port}", f"localabstract:scrcpy_{scid}"],
                        capture_output=True, timeout=10, check=True)
         args = [f"scid={scid}", "log_level=warn", "tunnel_forward=true", "audio=false", "control=true", "cleanup=true",
                 "video_codec=h264", f"video_bit_rate={self.bit_rate}", f"max_fps={self.max_fps}", "max_size=0",
                 "send_device_meta=false", "send_frame_meta=true", "send_dummy_byte=true"]
-        self.server = subprocess.Popen([self.adb, "shell", f"CLASSPATH={REMOTE}", "app_process", "/",
+        self.server = subprocess.Popen([*self.adbc, "shell", f"CLASSPATH={REMOTE}", "app_process", "/",
                                         "com.genymobile.scrcpy.Server", version] + args,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         t0 = time.time()
@@ -92,7 +93,9 @@ class Phone:
                 pass
         if self.server:
             self.server.terminate()
-        subprocess.run([self.adb, "forward", "--remove", f"tcp:{self.port}"], capture_output=True, timeout=10)
+        subprocess.run([*self.adbc, "forward", "--remove", f"tcp:{self.port}"], capture_output=True, timeout=10)
+        # leave nothing behind on the phone
+        subprocess.run([*self.adbc, "shell", "rm", "-f", REMOTE], capture_output=True, timeout=10)
 
     # ------------------------------------------------------------ video
     def _recv(self, n):

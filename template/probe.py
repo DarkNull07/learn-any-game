@@ -9,7 +9,8 @@
   probe.py times                      measure cold start and warm resume of the game, saved into game.json
   probe.py regress NAME EXPECTED      save the live screen as regress\\NAME__EXPECTED.png (a test frame)
   probe.py ui                         save Android's view of the screen to model\\shots\\ui_<time>.xml
-Never use these on money buttons or reward-ad buttons."""
+Pictures come from the same live stream the bot uses, so templates and scores match what the bot sees at run time
+(add --png to use Android's screencap instead). Never use these on money buttons or reward-ad buttons."""
 import os
 import sys
 import time
@@ -28,6 +29,8 @@ def main(argv):
     if not argv:
         print(__doc__)
         return 1
+    png = "--png" in argv
+    argv = [x for x in argv if x != "--png"]
     cmd, a = argv[0], argv[1:]
     game = config.load_game(HERE)
     shots = os.path.join(HERE, "model", "shots")
@@ -37,7 +40,7 @@ def main(argv):
                    os.path.join(HERE, "model", "templates", a[5] + ".png"))
         print("saved", out)
         return 0
-    dev = Device(use_stream=cmd in ("watch", "swipe"))
+    dev = Device(use_stream=not png)
     scr = Screens(HERE)
     dev.guard = scr.guard_for(dev)
     if cmd == "snap":
@@ -76,7 +79,7 @@ def main(argv):
         while time.time() - t0 < 120 and scr.name(dev.screenshot()) == "unknown":
             time.sleep(0.3)
         cold = time.time() - t0
-        dev.shell("input keyevent 3")
+        dev.home()
         time.sleep(2)
         t0 = time.time()
         dev.resume(pkg)

@@ -16,7 +16,6 @@ import csv
 import datetime as dt
 import glob
 import os
-import re
 import threading
 import time
 
@@ -26,6 +25,7 @@ import numpy as np
 from . import adclose, config
 
 MIN_SCORE = 0.88
+LEARNED_MIN_SCORE = 0.92   # buttons the kit learned by itself must match more closely
 INNER_R = 18           # templates are 37x37 at 1080 px screen width; only the inner X is compared
 REF_W = 1080
 
@@ -44,6 +44,9 @@ class AdCloser:
         os.makedirs(os.path.join(self.lib, "blacklist"), exist_ok=True)
         self.sdk = self._patterns()
         self._load_templates()
+        if not self.sdk or not self.templates:
+            self.log(f"  WARNING: the shared ad library looks empty ({self.lib}): ad screens can't be recognised. "
+                     f"Run  gamekit sync \"{game.get('name')}\"  from the kit folder to fix the link.")
 
     # ------------------------------------------------------------ library
     def _patterns(self):
@@ -122,6 +125,7 @@ class AdCloser:
             for name, t in self.templates:
                 if skip_only and not name.lower().startswith("skip"):
                     continue
+                need = LEARNED_MIN_SCORE if "learned" in name else MIN_SCORE
                 for s in (0.8, 1.0, 1.25):
                     k = s * s0
                     tt = cv2.resize(t, None, fx=k, fy=k, interpolation=cv2.INTER_AREA) if k != 1 else t
@@ -130,7 +134,7 @@ class AdCloser:
                     m = _inner_mask(tt.shape[0], INNER_R * k)
                     r = np.nan_to_num(cv2.matchTemplate(part, tt, cv2.TM_CCOEFF_NORMED, mask=m), nan=0, posinf=0, neginf=0)
                     _, v, _, (x, y) = cv2.minMaxLoc(r)
-                    if v >= MIN_SCORE and (best is None or v > best[2]):
+                    if v >= need and (best is None or v > best[2]):
                         best = (x0 + x + tt.shape[1] // 2, y0 + y + tt.shape[0] // 2, float(v), name)
         return best
 
@@ -162,11 +166,19 @@ class AdCloser:
             self.log(f"  Ad {result} by {method} after {secs:.1f}s.")
             return result
 
+        def look():
+            """Foreground app; when Android doesn't answer, the last known answer stays (unknown is not 'left')."""
+            nonlocal fg_pkg, fg_act, t_fg
+            p, a = self.dev.foreground()
+            t_fg = time.time()
+            if p:
+                fg_pkg, fg_act = p, a
+            return fg_pkg, fg_act
+
         while True:
             img = self.dev.screenshot()
             if time.time() - t_fg > 1.0:
-                fg_pkg, fg_act = self.dev.foreground()
-                t_fg = time.time()
+                look()
                 if self.is_ad_activity(fg_act) and not first_ad_act:
                     first_ad_act = fg_act
                     self.log(f"  Ad screen: {fg_act}")
@@ -185,7 +197,7 @@ class AdCloser:
                         self.log(f"  That button opens the store: blacklisted ({os.path.basename(p)}).")
                 self.dev.back()
                 time.sleep(0.8)
-                if self.dev.foreground()[0] != self.pkg:
+                if look()[0] != self.pkg:
                     self.dev.resume(self.pkg)
                     time.sleep(float(self.game.get("warm_resume_s") or 1.5))
                 t_fg = 0.0
@@ -230,20 +242,23 @@ class AdCloser:
                 n, t_last = spot.get(key, (0, 0.0))
                 if same and time.time() - t_cand >= 0.12 and n < 2 and time.time() - t_last >= 4.0:
                     self.log(f"  Tapping {cand[2]} at ({cand[0]},{cand[1]}) after {time.time() - t0:.1f}s.")
+                    was_ad_screen = ad_front
                     if self.dev.tap(cand[0], cand[1]):
                         spot[key] = (n + 1, time.time())
                         taps.append((cand[0], cand[1], cand[2].split(" (")[0], img))
                         t_progress = time.time()
                         time.sleep(0.8)
                         after = self.dev.screenshot()
-                        pk, act = self.dev.foreground()
-                        t_fg = time.time()
-                        fg_pkg, fg_act = pk, act
-                        if pk == self.pkg and not self.is_ad_activity(act) and not cand[2].startswith("known"):
-                            p = self._learn(img, cand[0], cand[1], "close_templates", "learned")
+                        pk, act = look()
+                        back_in_game = pk == self.pkg and is_game_screen(after)
+                        ad_screen_gone = was_ad_screen and pk == self.pkg and not self.is_ad_activity(act)
+                        # learn only a button whose tap really ended the ad, never one that merely got tapped
+                        if (back_in_game or ad_screen_gone) and not cand[2].startswith("known"):
+                            zone = "skip_learned" if cand[1] > img.shape[0] * 0.82 else "learned"
+                            p = self._learn(img, cand[0], cand[1], "close_templates", zone)
                             if p:
                                 self.log(f"  New close button learned for every game: {os.path.basename(p)}")
-                        if pk == self.pkg and is_game_screen(after):
+                        if back_in_game:
                             return finish("closed", taps[-1][2])
                     last_cand = None
                     continue
