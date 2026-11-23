@@ -1,0 +1,24 @@
+# Parts of Android activity names that mean "an ad is on screen" (lower/upper case does not matter).
+# One per line. Add new ones when a run log shows an unknown ad screen. Keep them specific:
+# "unity" alone would also match the game itself (UnityPlayerActivity), so use the full ad part.
+gms.ads.AdActivity
+com.applovin
+com.ironsource
+com.unity3d.services.ads
+com.unity3d.ads
+com.vungle
+com.liftoff
+com.mbridge.msdk
+com.facebook.ads
+com.bytedance.sdk.openadsdk
+com.inmobi.ads
+com.chartboost
+com.fyber
+com.digitalturbine
+com.moloco
+sg.bigo.ads
+com.yandex.mobile.ads
+com.adcolony
+com.mintegral
+com.smaato
+com.startapp

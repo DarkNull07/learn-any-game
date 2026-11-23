@@ -1,0 +1,7 @@
+Game card: fill one line each (the recording shows the rest).
+1. Game name and package (leave the package empty if unsure):
+2. Goal of a level in one line:
+3. How you lose (lives, hearts, timer, moves):
+4. Popups you always decline, and what you tap to decline them:
+5. Anything that costs real money or makes you watch an ad (never tap these):
+6. Level you are on now:

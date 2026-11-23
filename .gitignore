@@ -1,0 +1,9 @@
+# per-user and per-run files (never published)
+config.json
+.venv/
+tools/
+__pycache__/
+*.pyc
+library/ads/ads_log.csv
+library/ads/blacklist/
+*.zip
