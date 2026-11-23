@@ -62,13 +62,17 @@ def main():
     ctx = {"game": game, "cfg": cfg, "log": log, "screens": scr, "dry_run": args.dry_run, "level_no": None,
            "hints_allowed": cfg.get("hints_allowed", False), "safe_mode": cfg.get("safe_mode", False)}
     st = {"done": 0, "restarts": [], "level_t0": time.time(), "ads": 0, "ad_s": 0.0, "level": 0}
+    code = 0   # exit code: 0 finished, 1 stopped by a rule, 2 crashed, 130 Ctrl+C
     try:
         run(args, cfg, game, log, dev, scr, ads, ctx, st)
     except Stop as e:
         log(f"STOP: {e}")
+        code = 1
     except KeyboardInterrupt:
         log("Stopped by you (Ctrl+C).")
+        code = 130
     except Exception:  # noqa: BLE001  any crash: log it with a picture, never leave the phone connection open
+        code = 2
         log("CRASH:\n" + traceback.format_exc())
         try:
             p = log.failure(dev.last_img, "crash")
@@ -78,7 +82,7 @@ def main():
     finally:
         log(f"=== Finished: {st['done']} levels won. Report: {os.path.join(HERE, 'logs', 'report.csv')}")
         dev.close()
-    return 0
+    return code
 
 
 def restart(dev, game, log, st, why, img=None):
@@ -114,6 +118,7 @@ def run(args, cfg, game, log, dev, scr, ads, ctx, st):
     stuck_limit = max(20.0, float(game.get("cold_start_s") or 20))
     level_limit = float(game.get("max_level_minutes", 10)) * 60
     t_unknown, unknown_saved = None, False
+    ad_check = [0.0, None]          # (time, answer) of the last "is this an ad?" check
     prev_name, last_action, same_count = None, None, 0
     lost_in_row = stuck_solver = solves = 0
     t_progress = time.time()        # last time a level ended (overall watchdog)
@@ -133,9 +138,14 @@ def run(args, cfg, game, log, dev, scr, ads, ctx, st):
             if waited < UNKNOWN_GRACE:
                 time.sleep(0.1)
                 continue
-            why = is_ad(dev, ads, game, log) if cfg.get("ads") != "offline" else None
+            why = None
+            if cfg.get("ads") != "offline":
+                # Android's screen tree is slow (1-3 s): ask at most every 4 s while the screen stays unknown
+                if time.time() - ad_check[0] > 4.0:
+                    ad_check[:] = [time.time(), is_ad(dev, ads, game, log)]
+                why = ad_check[1]
             if why:
-                prev_name = None
+                # prev_name is kept: a win/lose screen seen again after an ad must not count twice
                 if args.dry_run:
                     log(f"  Ad ({why}); dry run: not closing it.")
                     time.sleep(2)
@@ -149,6 +159,7 @@ def run(args, cfg, game, log, dev, scr, ads, ctx, st):
                     if len(st["restarts"]) > MAX_RESTARTS:
                         raise Stop("had to restart the game too often in 10 minutes. See logs\\unknown\\.")
                 t_unknown, unknown_saved = None, False
+                ad_check[0] = 0.0
                 continue
             if waited > 4 and not unknown_saved:
                 unknown_saved = True
@@ -161,6 +172,7 @@ def run(args, cfg, game, log, dev, scr, ads, ctx, st):
             time.sleep(0.3)
             continue
         t_unknown, unknown_saved = None, False
+        ad_check[0] = 0.0
         name, act = s["name"], s.get("action", "wait")
         arrived = name != prev_name      # first sight of this screen (not the same screen seen again)
         prev_name = name

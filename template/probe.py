@@ -12,6 +12,7 @@
 Pictures come from the same live stream the bot uses, so templates and scores match what the bot sees at run time
 (add --png to use Android's screencap instead). Never use these on money buttons or reward-ad buttons."""
 import os
+import shlex
 import sys
 import time
 
@@ -21,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from kit import config  # noqa: E402
-from kit.device import Device  # noqa: E402
+from kit.device import Device, check_package  # noqa: E402
 from kit.screens import Screens, crop, diff_score  # noqa: E402
 
 
@@ -72,7 +73,7 @@ def main(argv):
             time.sleep(0.2)
     elif cmd == "times":
         pkg = game["package"]
-        dev.shell(f"am force-stop {pkg}")
+        dev.shell("am force-stop " + shlex.quote(check_package(pkg)))   # validated + quoted
         time.sleep(1)
         t0 = time.time()
         dev.resume(pkg)

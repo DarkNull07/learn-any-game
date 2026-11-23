@@ -3,6 +3,16 @@
 Every change to kit\ or template\ gets a line here and a version bump in kit\__init__.py, so `gamekit sync`
 knows a game folder's copy is out of date.
 
+## 1.1.1 (2026-11-23) - second review
+- setup can't loop: it re-runs inside the new .venv once (GAMEKIT_IN_VENV) and stops with a clear message if the
+  packages still don't import; opencv-python-headless (no libGL needed on Linux).
+- gamekit.sh, run.sh, probe.sh are executable in git.
+- A win/lose screen seen again after an ad isn't counted twice; the "is this an ad?" check (uiautomator) runs at
+  most every 4 s on an unknown screen; bot exit code is 1 after STOP, 2 after a crash, 130 after Ctrl+C.
+- probe times: package validated and quoted; game names may use letters of any language.
+- Removed the dead "skip_learned" path (bottom-right zone uses curated skip templates only).
+- Shared lesson about templates now says: cut them from live probe snaps, never from the recorded video.
+
 ## 1.1.0 (2026-11-23) - fixes from a code review
 - Safety: wins/losses counted once per level (on arrival of the screen); the ad ladder runs only on confirmed ads
   (ad SDK screen, another app, or an ad view in Android's screen tree), unknown game screens are never tapped (picture

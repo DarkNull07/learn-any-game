@@ -254,8 +254,7 @@ class AdCloser:
                         ad_screen_gone = was_ad_screen and pk == self.pkg and not self.is_ad_activity(act)
                         # learn only a button whose tap really ended the ad, never one that merely got tapped
                         if (back_in_game or ad_screen_gone) and not cand[2].startswith("known"):
-                            zone = "skip_learned" if cand[1] > img.shape[0] * 0.82 else "learned"
-                            p = self._learn(img, cand[0], cand[1], "close_templates", zone)
+                            p = self._learn(img, cand[0], cand[1], "close_templates", "learned")
                             if p:
                                 self.log(f"  New close button learned for every game: {os.path.basename(p)}")
                         if back_in_game:

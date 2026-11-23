@@ -91,6 +91,14 @@ def cmd_setup(a):
     venv_py = _venv_python()
     if missing:
         say(f"Missing Python packages: {', '.join(missing)}")
+        if os.environ.get("GAMEKIT_IN_VENV"):
+            # already re-ran inside the new environment once and the imports still fail: stop, don't loop
+            say("The packages were installed but still can't be imported:")
+            for mod in missing:
+                say(f"  {mod}")
+            say("On Linux this is usually a missing system library (try: sudo apt install libgl1 libglib2.0-0).")
+            say(f"Check with:  {venv_py} -c \"import cv2, numpy, av\"   then run setup again.")
+            return 1
         if os.path.abspath(sys.executable) == os.path.abspath(venv_py):
             subprocess.run([venv_py, "-m", "pip", "install", "-r", os.path.join(ROOT, "requirements.txt")], check=True)
         elif ask_bool(f"Create a private Python environment in {os.path.join(ROOT, '.venv')} and install them",
@@ -101,7 +109,8 @@ def cmd_setup(a):
         else:
             return 1
         say("Installed. Continuing setup inside that environment (gamekit uses it from now on).\n")
-        return subprocess.call([venv_py, os.path.abspath(__file__), "setup"] + (["--yes"] if a.yes else []))
+        env = dict(os.environ, GAMEKIT_IN_VENV="1")
+        return subprocess.call([venv_py, os.path.abspath(__file__), "setup"] + (["--yes"] if a.yes else []), env=env)
     adb = config.find_adb(cfg)
     if not adb:
         say("adb (Android platform-tools) was not found.")
@@ -206,13 +215,13 @@ def _python_for_games():
     return venv_py if os.path.exists(venv_py) else sys.executable
 
 
-NAME_OK = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.()'&+-]{0,59}$")
+NAME_OK = re.compile(r"^[^\W_][\w .()'&+-]{0,59}$")   # letters of any language, digits, a few symbols
 
 
 def _check_name(name):
     """A game name becomes a folder name: no paths, no tricks."""
     if not NAME_OK.match(name) or ".." in name or name.strip() != name or name.endswith("."):
-        say(f'"{name}" can\'t be a game folder name. Use letters, numbers, spaces and - _ . ( ) only.')
+        say(f'"{name}" can\'t be a game folder name. Use letters (any language), numbers, spaces and - _ . ( ) only.')
         sys.exit(1)
     return name
 

@@ -10,7 +10,7 @@ Format: date | tag | lesson. Tags: safety, ads, vision, input, speed, flow, phon
 2026-11-01 | flow | Never tap based on a fixed wait: re-read the screen until the previous move's result has finished (moving pieces looked "gone" too early and lives were lost).
 2026-11-01 | flow | Count a level as won only on the real win screen; a revive/retry screen is not a win.
 2026-11-01 | flow | Never skip the settle check at level start: intro animations were read as the board.
-2026-11-04 | vision | Templates cut from JPEG/video frames fail on live PNG screenshots. Always cut templates from `probe.py snap` PNGs.
+2026-11-04 | vision | Templates cut from saved JPEG/video frames failed on live screenshots. Cut templates only from live frames of the same source the bot uses: `probe snap` (live stream frame saved losslessly as PNG), never from the recorded video.
 2026-11-04 | vision | Hard rule before the first move: what was read must agree with what the game shows (piece count = counter, etc.).
 2026-11-04 | vision | Some levels open zoomed in. Pinch out with two fingers until nothing touches the screen edges.
 2026-11-04 | vision | A wrongly tapped piece can change look (striped/grey) instead of leaving. Treat changed-look pieces as obstacles, not gone.
